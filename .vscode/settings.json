@@ -1,0 +1,7 @@
+{
+    "intelephense.diagnostics.undefinedTypes": false,
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "enable_typescript_language_service": false,
+    "launch": {},
+    "javascript.implicitProjectConfig.experimentalDecorators": true
+}
