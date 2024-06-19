@@ -64,7 +64,8 @@ class UserController extends Controller
     {
 
         User::find(Auth::user()->id)->followings()->attach(User::find($request->input('id')));
-        return redirect()->route('user', ['username' => User::find($request->input('id'))->username]);
+       // return redirect()->route('user', ['username' => User::find($request->input('id'))->username]);
+       return redirect()->back();
     }
 
     /**
@@ -75,7 +76,8 @@ class UserController extends Controller
     public function unfollow(Request $request)
     {
         User::find(Auth::user()->id)->followings()->detach(User::find($request->input('id')));
-        return redirect()->route('user', ['username' => User::find($request->input('id'))->username]);
+        //return redirect()->route('user', ['username' => User::find($request->input('id'))->username]);
+        return redirect()->back();
     }
 
     /**
