@@ -40,7 +40,9 @@
   <footer id="footer">
     <div class="text-center padder">
       <p>
-        <small>Desarrollado por Carlos Robles<br>&copy; 2020</small>
+         <small><b>Uso exclusivo para fines educativos</b></small>
+	 <br>
+         <small>Desarrollado por Carlos Robles<br>&copy; 2020 - <?php echo date("Y"); ?></small>
       </p>
     </div>
   </footer>
