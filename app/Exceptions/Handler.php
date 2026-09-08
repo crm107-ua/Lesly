@@ -50,11 +50,17 @@ class Handler extends ExceptionHandler
      */
     public function render($request, Throwable $exception)
     {
-        if ($this->isHttpException($exception)) {
-            if ($exception->getStatusCode() == 404) {
-                return response()->view('errors.404');
+        if ($this->isHttpException($exception) && $exception->getStatusCode() == 404) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'message' => 'Recurso no encontrado.',
+                    'error' => 'not_found',
+                ], 404);
             }
+
+            return response()->view('errors.404');
         }
+
         return parent::render($request, $exception);
     }
 }

@@ -85,7 +85,7 @@ class PlaylistController extends Controller
             $songs[] = [
                 "title" => $song->name,
                 "artist" => $song->artist->name,
-                "mp3" => $song->url,
+                "mp3" => $song->playUrl(),
                 "poster" => $song->image
             ];
         }

@@ -2,179 +2,372 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Song;
-use App\Http\Resources\SongResource;
+use App\Exceptions\SongNotFoundException;
+use App\Exceptions\SongUnauthorizedException;
+use App\Exceptions\SongUploadException;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\SongResource;
+use App\Song;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use Throwable;
 
 class SongController extends Controller
 {
+    private const RELATIONS = ['artist', 'genero', 'album'];
+
     /**
      * Display a listing of the resource.
      *
-     * @return \Illuminate\Http\Response
+     * @return AnonymousResourceCollection
      */
-    public function index()
+    public function index(): AnonymousResourceCollection
     {
-        return SongResource::collection(Song::all());
+        $songs = Song::with(self::RELATIONS)->latest()->get();
+
+        return SongResource::collection($songs);
     }
 
     /**
      * Store a newly created resource in storage.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\Response
+     * @param  Request  $request
+     * @return SongResource|JsonResponse
+     *
+     * @throws SongUnauthorizedException
+     * @throws SongUploadException
      */
     public function store(Request $request)
     {
+        $this->ensureAuthenticated();
+
         $request->validate([
             'name' => 'required|max:100',
             'letra' => 'required|max:2000',
             'imagen' => 'required|image|mimes:jpeg,png,jpg|max:2048',
             'cancion' => 'required|file|mimes:audio/mpeg,mpga,mp3,wav,aac',
-            'fondo' => 'image|mimes:jpeg,png,jpg|max:2048',
-            'video' => 'max:200',
-            'descripcion' => 'max:450'
+            'fondo' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'video' => 'nullable|max:200',
+            'descripcion' => 'nullable|max:450',
+            'genero' => 'required',
         ]);
 
-        $imagen = "/songs/images/" . $this->name() . '.' . $request->file('imagen')->getClientOriginalExtension();
-        $request->imagen->move(public_path('/songs/images'), $imagen);
+        $uploadedPaths = [];
 
-        $song = "/songs/files/" . $this->name() . '.' . $request->file('cancion')->getClientOriginalExtension();
-        $request->cancion->move(public_path('/songs/files'), $song);
+        try {
+            $song = DB::transaction(function () use ($request, &$uploadedPaths) {
+                $imagen = $this->storeUpload($request->file('imagen'), 'songs/images', $uploadedPaths);
+                $audio = $this->storeUpload($request->file('cancion'), 'songs/files', $uploadedPaths);
 
-        $fondo = null;
-        if ($request->file('fondo')) {
-            $fondo = "/songs/fondos/" . $this->name() . '.' . $request->file('fondo')->getClientOriginalExtension();
-            $request->fondo->move(public_path('/songs/fondos'), $fondo);
+                $fondo = null;
+                if ($request->hasFile('fondo')) {
+                    $fondo = $this->storeUpload($request->file('fondo'), 'songs/fondos', $uploadedPaths);
+                }
+
+                return Song::create([
+                    'url' => $audio,
+                    'name' => $request->input('name'),
+                    'artist_id' => Auth::id(),
+                    'genero_id' => $request->input('genero'),
+                    'image' => $imagen,
+                    'estreno' => date('d/m/Y'),
+                    'slug' => $this->slug($request->input('name')),
+                    'letra' => $request->input('letra'),
+                    'fondo' => $fondo,
+                    'video' => $request->input('video'),
+                    'description' => $request->input('description', $request->input('descripcion')),
+                ])->load(self::RELATIONS);
+            });
+        } catch (SongUploadException $exception) {
+            $this->cleanupUploadedFiles($uploadedPaths);
+            throw $exception;
+        } catch (Throwable $exception) {
+            $this->cleanupUploadedFiles($uploadedPaths);
+
+            report($exception);
+
+            return response()->json([
+                'message' => 'No se pudo crear la canción.',
+                'error' => 'song_create_failed',
+            ], 500);
         }
 
-        Song::create([
-            'url' => $song,
-            'name' => $request->input('name'),
-            'artist_id' => Auth::user()->id,
-            'genero_id' => $request->input('genero'),
-            'image' => $imagen,
-            'estreno' => date("d/m/Y"),
-            'slug' => $this->slug($request->input('name')),
-            'letra' => $request->input('letra'),
-            'fondo' => $fondo,
-            'video' => $request->input('video'),
-            'description' => $request->input('description'),
-        ]);
-
-        return back()
-            ->with('success', 'La canción ha sido añadida correctamente, revisa ahora mismo tus temas!');
+        return (new SongResource($song))
+            ->additional([
+                'message' => 'La canción ha sido añadida correctamente, revisa ahora mismo tus temas!',
+            ])
+            ->response()
+            ->setStatusCode(201);
     }
 
     /**
      * Display the specified resource.
      *
      * @param  int  $id
-     * @return \Illuminate\Http\Response
+     * @return SongResource
+     *
+     * @throws SongNotFoundException
      */
-    public function show($id)
+    public function show($id): SongResource
     {
         try {
-            $song = Song::findOrFail($id);
-        } catch (\Throwable $th) {
-            return view('errors.404');
+            $song = Song::with(self::RELATIONS)->findOrFail($id);
+        } catch (ModelNotFoundException $exception) {
+            throw new SongNotFoundException();
         }
+
         return new SongResource($song);
     }
 
     /**
      * Update the specified resource in storage.
      *
-     * @param  \Illuminate\Http\Request  $request
+     * @param  Request  $request
      * @param  int  $id
-     * @return \Illuminate\Http\Response
+     * @return SongResource|JsonResponse
+     *
+     * @throws SongNotFoundException
+     * @throws SongUnauthorizedException
+     * @throws SongUploadException
      */
     public function update(Request $request, $id)
     {
+        $this->ensureAuthenticated();
+
         $request->validate([
             'name' => 'required|max:100',
             'letra' => 'required|max:2000',
-            'imagen' => 'image|mimes:jpeg,png,jpg|max:2048',
-            'cancion' => 'file|mimes:audio/mpeg,mpga,mp3,wav,aac',
-            'fondo' => 'image|mimes:jpeg,png,jpg|max:2048',
-            'video' => 'max:200',
-            'descripcion' => 'max:450'
+            'imagen' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'cancion' => 'nullable|file|mimes:audio/mpeg,mpga,mp3,wav,aac',
+            'fondo' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'video' => 'nullable|max:200',
+            'descripcion' => 'nullable|max:450',
+            'genero' => 'required',
         ]);
 
         try {
             $song = Song::findOrFail($id);
-        } catch (\Throwable $th) {
-            return view('errors.404');
+        } catch (ModelNotFoundException $exception) {
+            throw new SongNotFoundException();
         }
 
-        if (!file_exists($_FILES['imagen']['tmp_name']) || !is_uploaded_file($_FILES['imagen']['tmp_name'])) {
-            $imagen = $song->image;
-        } else {
-            if (!strpos($song->image, ':')) {
-                unlink(public_path($song->image));
-            }
-            $imagen = "/songs/images/" . $this->name() . '.' . $request->file('imagen')->getClientOriginalExtension();
-            $request->imagen->move(public_path('/songs/images/'), $imagen);
+        $uploadedPaths = [];
+        $obsoletePaths = [];
+
+        try {
+            $song = DB::transaction(function () use ($request, $song, &$uploadedPaths, &$obsoletePaths) {
+                $imagen = $song->image;
+                if ($request->hasFile('imagen')) {
+                    $obsoletePaths[] = $song->image;
+                    $imagen = $this->storeUpload($request->file('imagen'), 'songs/images', $uploadedPaths);
+                }
+
+                $cancion = $song->url;
+                if ($request->hasFile('cancion')) {
+                    $obsoletePaths[] = $song->url;
+                    $cancion = $this->storeUpload($request->file('cancion'), 'songs/files', $uploadedPaths);
+                }
+
+                $fondo = $song->fondo;
+                if ($request->hasFile('fondo')) {
+                    if ($song->fondo) {
+                        $obsoletePaths[] = $song->fondo;
+                    }
+                    $fondo = $this->storeUpload($request->file('fondo'), 'songs/fondos', $uploadedPaths);
+                }
+
+                $album = $request->input('album');
+                if ($album === 'null' || $album === '') {
+                    $album = null;
+                }
+
+                $song->update([
+                    'url' => $cancion,
+                    'name' => $request->input('name'),
+                    'genero_id' => $request->input('genero'),
+                    'album_id' => $album,
+                    'image' => $imagen,
+                    'letra' => $request->input('letra'),
+                    'fondo' => $fondo,
+                    'video' => $request->input('video'),
+                    'description' => $request->input('description', $request->input('descripcion')),
+                ]);
+
+                return $song->fresh(self::RELATIONS);
+            });
+
+            $this->cleanupUploadedFiles($obsoletePaths);
+        } catch (SongUploadException $exception) {
+            $this->cleanupUploadedFiles($uploadedPaths);
+            throw $exception;
+        } catch (Throwable $exception) {
+            $this->cleanupUploadedFiles($uploadedPaths);
+            report($exception);
+
+            return response()->json([
+                'message' => 'No se pudo modificar la canción.',
+                'error' => 'song_update_failed',
+            ], 500);
         }
 
-        if (!file_exists($_FILES['cancion']['tmp_name']) || !is_uploaded_file($_FILES['cancion']['tmp_name'])) {
-            $cancion = $song->url;
-        } else {
-            if (!strpos($song->url, ':')) {
-                unlink(public_path($song->url));
-            }
-            $cancion = "/songs/files/" . $this->name() . '.' . $request->file('cancion')->getClientOriginalExtension();
-            $request->cancion->move(public_path('/songs/files/'), $cancion);
-        }
-
-        if (!file_exists($_FILES['fondo']['tmp_name']) || !is_uploaded_file($_FILES['fondo']['tmp_name'])) {
-            $fondo = $song->fondo;
-        } else {
-            if ($song->fondo) {
-                unlink(public_path($song->fondo));
-            }
-            $fondo = "/songs/fondos/" . $this->name() . '.' . $request->file('fondo')->getClientOriginalExtension();
-            $request->fondo->move(public_path('/songs/fondos/'), $fondo);
-        }
-
-        if ($request->input('album') == "null") {
-            $album = null;
-        } else {
-            $album = $request->input('album');
-        }
-
-        $song->update(
-            [
-                'url' => $cancion,
-                'name' => $request->input('name'),
-                'genero_id' => $request->input('genero'),
-                'album_id' => $album,
-                'image' => $imagen,
-                'letra' => $request->input('letra'),
-                'fondo' => $fondo,
-                'video' => $request->input('video'),
-                'description' => $request->input('description'),
-            ]
-        );
-
-        $song->save();
-
-        return back()
-            ->with('success', 'La canción ha sido modificada correctamente, revisa ahora mismo tus canciones!');
+        return (new SongResource($song))->additional([
+            'message' => 'La canción ha sido modificada correctamente, revisa ahora mismo tus canciones!',
+        ]);
     }
 
     /**
      * Remove the specified resource from storage.
      *
      * @param  int  $id
-     * @return \Illuminate\Http\Response
+     * @return JsonResponse
+     *
+     * @throws SongNotFoundException
      */
-    public function destroy($id)
+    public function destroy($id): JsonResponse
     {
-        Song::findOrFail($id)->delete();
+        try {
+            $song = Song::findOrFail($id);
+        } catch (ModelNotFoundException $exception) {
+            throw new SongNotFoundException();
+        }
+
+        try {
+            DB::transaction(function () use ($song) {
+                $this->deleteLocalMedia($song->image);
+                $this->deleteLocalMedia($song->url);
+
+                if ($song->fondo) {
+                    $this->deleteLocalMedia($song->fondo);
+                }
+
+                $song->delete();
+            });
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'No se pudo eliminar la canción.',
+                'error' => 'song_delete_failed',
+            ], 500);
+        }
+
         return response()->json([
-            'message' => 'Canción eliminada correctamente'
+            'message' => 'Canción eliminada correctamente',
         ], 200);
+    }
+
+    /**
+     * @throws SongUnauthorizedException
+     */
+    private function ensureAuthenticated(): void
+    {
+        if (!Auth::check()) {
+            throw new SongUnauthorizedException();
+        }
+    }
+
+    /**
+     * Guarda un fichero en public/ y registra la ruta relativa.
+     *
+     * @param  UploadedFile  $file
+     * @param  string  $directory
+     * @param  array<int, string>  $uploadedPaths
+     * @return string
+     *
+     * @throws SongUploadException
+     */
+    private function storeUpload(UploadedFile $file, string $directory, array &$uploadedPaths): string
+    {
+        $destination = public_path($directory);
+
+        if (!File::isDirectory($destination) && !File::makeDirectory($destination, 0755, true)) {
+            throw new SongUploadException("No se pudo preparar el directorio {$directory}.");
+        }
+
+        $filename = $this->name() . '.' . $file->getClientOriginalExtension();
+        $relativePath = '/' . trim($directory, '/') . '/' . $filename;
+
+        try {
+            $file->move($destination, $filename);
+        } catch (Throwable $exception) {
+            report($exception);
+            throw new SongUploadException("Error al subir el archivo a {$directory}.");
+        }
+
+        if (!File::exists($destination . DIRECTORY_SEPARATOR . $filename)) {
+            throw new SongUploadException("El archivo no se guardó correctamente en {$directory}.");
+        }
+
+        $uploadedPaths[] = $relativePath;
+
+        return $relativePath;
+    }
+
+    /**
+     * Elimina medios locales (ignora URLs remotas http/https).
+     *
+     * @param  string|null  $path
+     * @return void
+     */
+    private function deleteLocalMedia(?string $path): void
+    {
+        if ($path === null || $path === '' || strpos($path, ':') !== false) {
+            return;
+        }
+
+        $absolute = public_path($path);
+
+        if (File::exists($absolute)) {
+            File::delete($absolute);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $paths
+     * @return void
+     */
+    private function cleanupUploadedFiles(array $paths): void
+    {
+        foreach ($paths as $path) {
+            $this->deleteLocalMedia($path);
+        }
+    }
+
+    /**
+     * Crea un slug personalizado para una canción.
+     *
+     * @param  string  $text
+     * @return string
+     */
+    public function slug($text): string
+    {
+        $text = preg_replace('~[^\pL\d]+~u', '-', $text);
+        $text = iconv('utf-8', 'us-ascii//TRANSLIT', $text);
+        $text = preg_replace('~[^-\w]+~', '', $text);
+        $text = trim($text, '-');
+        $text = preg_replace('~-+~', '-', $text);
+        $text = strtolower($text);
+
+        if (empty($text)) {
+            return 'n-a';
+        }
+
+        return $text;
+    }
+
+    /**
+     * Crea un nombre personalizado para cada fichero.
+     *
+     * @return int
+     */
+    public function name(): int
+    {
+        return (int) (explode(' ', microtime())[0] * 10000000);
     }
 }

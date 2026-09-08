@@ -2,7 +2,7 @@
 <h4 class="m-t-lg m-b">Reproducir</h4>
     <ul class="list-group list-group-lg">
     <audio id="audio">
-            <source src="{{$song->url}}" type="audio/mpeg">
+            <source src="{{ $song->playUrl() }}" type="audio/mpeg">
             Tu navegador no soporta este reproductor
             </audio>
         <div>

@@ -47,7 +47,7 @@ class UserController extends Controller
             $songs[] = [
                 "title" => "",
                 "artist" => $song->artist->name,
-                "mp3" => $song->url,
+                "mp3" => $song->playUrl(),
                 "poster" => $song->image
             ];
         }

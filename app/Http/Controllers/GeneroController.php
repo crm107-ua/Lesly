@@ -23,7 +23,7 @@ class GeneroController extends Controller
             $canciones[] = [
                 "title" => $song->name,
                 "artist" => $song->artist->name,
-                "mp3" => $song->url,
+                "mp3" => $song->playUrl(),
                 "poster" => $song->image
             ];
         }
@@ -51,7 +51,7 @@ class GeneroController extends Controller
             $canciones[] = [
                 "title" => $song->name,
                 "artist" => $song->artist->name,
-                "mp3" => $song->url,
+                "mp3" => $song->playUrl(),
                 "poster" => $song->image
             ];
         }

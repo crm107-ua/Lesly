@@ -14,7 +14,7 @@ class Song extends Model
      * @var array
      */
     protected $fillable = [
-        'id', 'url', 'name', 'image', 'estreno', 'slug', 'letra', 'fondo', 'video', 'artist_id', 'genero_id', 'album_id'
+        'id', 'url', 'name', 'image', 'estreno', 'slug', 'letra', 'fondo', 'video', 'description', 'artist_id', 'genero_id', 'album_id'
     ];
 
     /**
@@ -49,5 +49,34 @@ class Song extends Model
     public function criticas()
     {
         return $this->hasMany(Critica::class, 'song_id');
+    }
+
+    /**
+     * URL lista para el reproductor. En local convierte
+     * https://lesly.carlosrobles.es/storage/songs/... en /storage/songs/...
+     * sin tocar la base de datos.
+     */
+    public function playUrl()
+    {
+        return static::toLocalMediaUrl($this->attributes['url'] ?? '');
+    }
+
+    public static function toLocalMediaUrl($value)
+    {
+        if (!is_string($value) || $value === '') {
+            return $value;
+        }
+
+        if (!in_array(request()->getHost(), ['127.0.0.1', 'localhost'], true)) {
+            return $value;
+        }
+
+        if (!preg_match('#^https?://#i', $value)) {
+            return $value;
+        }
+
+        $path = parse_url($value, PHP_URL_PATH);
+
+        return (is_string($path) && $path !== '') ? $path : $value;
     }
 }
